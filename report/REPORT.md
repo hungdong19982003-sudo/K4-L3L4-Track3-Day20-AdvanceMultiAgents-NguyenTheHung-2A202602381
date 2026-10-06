@@ -4,7 +4,7 @@
 
 | Họ tên | Mã sinh viên | Phần đóng góp |
 |---|---|---|
-| Nguyễn Thế Hùng | 2A202602381 | 100% (harness, subagents, runner, curator, thực nghiệm, báo cáo) |
+| Nguyễn Thế Hưng | 2A202602381 | 100% (harness, subagents, runner, curator, thực nghiệm, báo cáo) |
 
 - Mô hình (`LAB_MODEL`), nhiệt độ (`LAB_TEMPERATURE`), `recursion_limit`: `google_genai:gemini-3.5-flash`, `0.0`, `60`
 - Phiên bản Deep Agents (`pip show deepagents`), hệ điều hành, chạy trực tiếp hay trong Docker: `deepagents 0.7.21`, Windows 11 64-bit, chạy trực tiếp qua PowerShell
