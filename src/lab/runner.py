@@ -46,6 +46,14 @@ def render_trace(messages) -> str:
     return "\n\n".join(parts)
 
 
+import time
+import tempfile
+import shutil
+from datetime import datetime, timezone
+from langchain_core.callbacks import UsageMetadataCallbackHandler
+from .agent import build_agent
+
+
 def run_task(task_id: str, condition: str, results_dir="results", model=None, recursion_limit: int = 60) -> dict:
     """Chạy MỘT tác vụ dưới MỘT điều kiện, chấm điểm, ghi kết quả, và trả về bản ghi (record).
 
@@ -65,7 +73,101 @@ def run_task(task_id: str, condition: str, results_dir="results", model=None, re
     Lỗi khi chạy tác tử KHÔNG được làm chương trình dừng: ghi vào `error` và vẫn chấm điểm.
     Sandbox là thư mục tạm NGOÀI kho mã nguồn và phải được xóa sau khi chạy.
     """
-    raise NotImplementedError("TODO 1: cài đặt run_task (xem guides/pseudocode/03_runner.md)")
+    cfg = CONDITIONS[condition]
+    task = get_task(task_id)
+    skills_dir = (ROOT / cfg["skills_dir"]) if cfg.get("skills_dir") else None
+
+    out = Path(results_dir) / condition / task_id
+    out.mkdir(parents=True, exist_ok=True)
+
+    sandbox = Path(tempfile.mkdtemp(prefix="sb_"))
+    record = {
+        "task": task_id,
+        "condition": condition,
+        "role": task.role,
+        "error": None,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
+    try:
+        prepare_sandbox(task, sandbox, skills_dir)
+        hash_before = hash_dir(sandbox / "skills")
+        record["skills_sha256"] = hash_before
+
+        agent = build_agent(sandbox, mode=cfg["mode"], use_skills=(skills_dir is not None), model=model)
+        usage = UsageMetadataCallbackHandler()
+        t0 = time.time()
+
+        messages = []
+        final = ""
+        try:
+            for chunk in agent.stream(
+                {"messages": [{"role": "user", "content": task.instruction}]},
+                config={"callbacks": [usage], "recursion_limit": recursion_limit},
+                stream_mode="values",
+            ):
+                if isinstance(chunk, dict) and "messages" in chunk:
+                    messages = chunk["messages"]
+            for m in reversed(messages):
+                if isinstance(m, AIMessage) and m.content:
+                    final = str(m.content)
+                    break
+                elif getattr(m, "role", "") == "assistant" and getattr(m, "content", ""):
+                    final = str(m.content)
+                    break
+            if not final and messages:
+                final = str(messages[-1].content)
+        except Exception as e:
+            record["error"] = f"{type(e).__name__}: {e}"
+            for m in reversed(messages):
+                if isinstance(m, AIMessage) and m.content:
+                    final = str(m.content)
+                    break
+                elif getattr(m, "role", "") == "assistant" and getattr(m, "content", ""):
+                    final = str(m.content)
+                    break
+            if not final and messages:
+                final = str(messages[-1].content)
+
+        record["seconds"] = round(time.time() - t0, 1)
+        in_tok = sum(m.get("input_tokens", 0) for m in usage.usage_metadata.values())
+        out_tok = sum(m.get("output_tokens", 0) for m in usage.usage_metadata.values())
+        tot_tok = sum(m.get("total_tokens", 0) for m in usage.usage_metadata.values())
+        record["tokens"] = {"input": in_tok, "output": out_tok, "total": tot_tok}
+
+        calls = []
+        for m in messages:
+            if isinstance(m, AIMessage):
+                calls.extend(getattr(m, "tool_calls", []))
+        record["tool_calls"] = len(calls)
+        record["subagent_calls"] = sum(1 for c in calls if c.get("name") == "task")
+
+        skills_read_set = set()
+        for tc in calls:
+            if tc.get("name") == "read_file":
+                fp = tc.get("args", {}).get("file_path", "")
+                if "skills/" in fp:
+                    after = fp.split("skills/", 1)[1].lstrip("/")
+                    parts = after.split("/")
+                    if parts and parts[0]:
+                        skills_read_set.add(parts[0])
+        record["skills_read"] = len(skills_read_set)
+        record["skills_modified"] = (hash_dir(sandbox / "skills") != hash_before)
+        record["final_message"] = final
+
+        g = grade(task, sandbox / "workspace")
+        record.update({
+            "score": g.get("score", 0.0),
+            "passed": g.get("passed", 0),
+            "total": g.get("total", 0),
+            "checks": g.get("checks", []),
+        })
+        (out / "trace.md").write_text(render_trace(messages), encoding="utf-8")
+    finally:
+        shutil.rmtree(sandbox, ignore_errors=True)
+
+    (out / "run.json").write_text(json.dumps(record, indent=2, ensure_ascii=False), encoding="utf-8")
+    return record
 
 
 def main(argv=None):
