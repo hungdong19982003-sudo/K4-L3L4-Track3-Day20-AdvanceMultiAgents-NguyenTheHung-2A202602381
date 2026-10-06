@@ -127,7 +127,7 @@ def curate_skills(results_dir="results", source_condition="baseline", out_dir=No
         f"Rules:\n"
         f"- Skills must be generic: do NOT mention specific task IDs, task-specific file names, answers, or numbers.\n"
         f"- Each skill must have YAML frontmatter with `name` (lowercase letters, numbers, hyphens only, e.g. check-data-quality) "
-        f"and `description` (one sentence stating WHEN TO USE).\n"
+        f"and `description` (one sentence stating WHEN TO USE; quote the YAML value if it contains a colon).\n"
         f"- The body should be concise procedural instructions (a checklist under 40 lines works best).\n"
         f"- Format each skill strictly as:\n"
         f"=== SKILL: <name> ===\n"
@@ -146,11 +146,25 @@ def curate_skills(results_dir="results", source_condition="baseline", out_dir=No
 
     response = model.invoke(prompt)
     reply_content = response.content if hasattr(response, "content") else str(response)
+    if isinstance(reply_content, list):
+        reply_content = "\n".join(
+            block.get("text", "") if isinstance(block, dict) else str(block)
+            for block in reply_content
+        )
 
     written = []
     for name, text in parse_skill_blocks(reply_content):
         if len(written) >= max_skills:
             break
+        # JSON-quoted strings are valid YAML scalar values. Some models emit
+        # descriptions such as "WHEN TO USE: ..." without YAML quoting.
+        text = re.sub(
+            r"^description:\s*(.+)$",
+            lambda match: "description: " + json.dumps(match.group(1).strip(), ensure_ascii=False),
+            text,
+            count=1,
+            flags=re.M,
+        )
         problems = validate_skill(text, expected_name=name)
         if problems:
             continue
